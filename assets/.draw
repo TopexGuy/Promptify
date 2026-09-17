@@ -45,7 +45,10 @@ P_DIR="$PROMPTIFY_DIR"
 [[ -d "$P_DIR/core/assets" ]] && P_DIR="$P_DIR/core"
 F_SHADOW="$P_DIR/assets/ASCII-Shadow.flf"
 
-if ! command -v figlet &> /dev/null; then
+# figlet must actually run (a broken PATH shim, e.g. the host Termux's figlet
+# inside proot-distro, would produce an empty banner). Fall back to a plain
+# centered line when it's missing or unusable.
+if ! command -v figlet &> /dev/null || ! figlet -v &>/dev/null; then
     CLEAN_LEN=$(( ${#NAME} + 8 ))
     OFFSET=$(( (TERM_W - CLEAN_LEN) / 2 ))
     [[ $OFFSET -lt 0 ]] && OFFSET=0
@@ -203,16 +206,61 @@ OFFSET=$(( (TERM_W - WIDTH) / 2 ))
 [[ $OFFSET -lt 0 ]] && OFFSET=0
 SPACER=$(printf "%${OFFSET}s" "")
 
-# Colorize with lolcat
-if command -v lolcat &> /dev/null; then
+# lolcat must actually run: a Ruby upgrade can wipe the gem and leave a dead
+# lolcat on PATH that passes `command -v` but fails every call. When it's not
+# usable, fall back to a native ANSI gradient so the banner is always colorful.
+lolcat_works() {
+    command -v lolcat &> /dev/null && lolcat --version &>/dev/null
+}
+
+# Native rainbow fallback — a faithful port of lolcat's numeric_rainbow()
+# (busyloop/lolcat lib/lolcat/lol.rb): per char,
+#   phase = freq * (seed_line + i/spread)  with freq=0.1, spread=3.0
+#   r = sin(phase)+128 etc., seed random 0-255 per run, +1 per line.
+# Same smooth banding, same random phase shift every render — no external gem.
+gradient_block() {
+    local lines=("$@")
+    local seed=$(( RANDOM % 256 ))
+    local r c os_off idx ch rv gv bv
+    for ((r=0; r<${#lines[@]}; r++)); do
+        os_off=$(( seed + r + 1 ))
+        for ((c=0; c<${#lines[r]}; c++)); do
+            ch="${lines[r]:c:1}"
+            # round(deg/2) for a 2-degree sine table, deg = (3*os+i)*180/(pi*30)
+            idx=$(( ((95493 * (3 * os_off + c)) + 5000) / 100000 ))
+            idx=$(( idx % 180 ))
+            if [[ "$TRUECOLOR" == "true" ]]; then
+                rv=${SIN_R[idx]}; gv=${SIN_G[idx]}; bv=${SIN_B[idx]}
+                printf "\033[38;2;%d;%d;%dm%s\033[0m" "$rv" "$gv" "$bv" "$ch"
+            else
+                printf "\033[38;5;%sm%s\033[0m" "${CUBE[idx]}" "$ch"
+            fi
+        done
+        printf "\n"
+    done
+}
+
+TRUECOLOR=false
+[[ "${COLORTERM:-}" == *truecolor* || "${COLORTERM:-}" == *24bit* ]] && TRUECOLOR=true
+
+# Precomputed sin(2-degree steps)*127+128 for red, and the green/blue channels are
+# the same wave shifted by 120°/240° (i.e. table index +60/+120). CUBE holds the
+# nearest 256-color index per step for non-truecolor terminals.
+SIN_R=( 128 132 137 141 146 150 154 159 163 167 171 176 180 184 188 192 195 199 203 206 210 213 216 219 222 225 228 231 233 236 238 240 242 244 246 247 249 250 251 252 253 254 254 255 255 255 255 255 254 254 253 252 251 250 249 247 246 244 242 240 238 236 233 231 228 225 222 219 216 213 210 206 203 199 195 192 188 184 180 176 171 167 163 159 154 150 146 141 137 132 128 124 119 115 110 106 102 97 93 89 85 80 76 72 68 64 61 57 53 50 46 43 40 37 34 31 28 25 23 20 18 16 14 12 10 9 7 6 5 4 3 2 2 1 1 1 1 1 2 2 3 4 5 6 7 9 10 12 14 16 18 20 23 25 28 31 34 37 40 43 46 50 53 57 61 64 68 72 76 80 85 89 93 97 102 106 110 115 119 124 )
+SIN_G=( 238 236 233 231 228 225 222 219 216 213 210 206 203 199 195 192 188 184 180 176 171 167 163 159 154 150 146 141 137 132 128 124 119 115 110 106 102 97 93 89 85 80 76 72 68 65 61 57 53 50 46 43 40 37 34 31 28 25 23 20 18 16 14 12 10 9 7 6 5 4 3 2 2 1 1 1 1 1 2 2 3 4 5 6 7 9 10 12 14 16 18 20 23 25 28 31 34 37 40 43 46 50 53 57 61 65 68 72 76 80 85 89 93 97 102 106 110 115 119 124 128 132 137 141 146 150 154 159 163 167 171 176 180 184 188 191 195 199 203 206 210 213 216 219 222 225 228 231 233 236 238 240 242 244 246 247 249 250 251 252 253 254 254 255 255 255 255 255 254 254 253 252 251 250 249 247 246 244 242 240 )
+SIN_B=( 18 16 14 12 10 9 7 6 5 4 3 2 2 1 1 1 1 1 2 2 3 4 5 6 7 9 10 12 14 16 18 20 23 25 28 31 34 37 40 43 46 50 53 57 61 64 68 72 76 80 85 89 93 97 102 106 110 115 119 124 128 132 137 141 146 150 154 159 163 167 171 176 180 184 188 191 195 199 203 206 210 213 216 219 222 225 228 231 233 236 238 240 242 244 246 247 249 250 251 252 253 254 254 255 255 255 255 255 254 254 253 252 251 250 249 247 246 244 242 240 238 236 233 231 228 225 222 219 216 213 210 206 203 199 195 191 188 184 180 176 171 167 163 159 154 150 146 141 137 132 128 124 119 115 110 106 102 97 93 89 85 80 76 72 68 65 61 57 53 50 46 43 40 37 34 31 28 25 23 20 )
+CUBE=( 154 154 154 154 148 148 148 148 148 148 148 148 184 184 184 184 184 184 184 178 178 178 178 178 178 178 178 214 214 214 214 208 208 208 209 209 209 209 209 209 209 209 203 203 203 203 203 203 203 204 204 204 204 204 204 204 204 198 198 198 199 199 199 199 163 163 163 163 163 163 163 163 164 164 164 164 164 164 164 128 128 128 128 128 128 128 128 129 129 129 129 93 93 93 99 99 99 99 99 99 99 99 63 63 63 63 63 63 63 69 69 69 69 69 69 69 69 33 33 33 39 39 39 39 38 38 38 38 38 38 38 38 44 44 44 44 44 44 44 43 43 43 43 43 43 43 43 49 49 49 49 48 48 48 84 84 84 84 84 84 84 84 83 83 83 83 83 83 83 119 119 119 119 119 119 119 119 118 118 118 )
+
+# Colorize with lolcat (native rainbow fallback when missing/broken)
+if lolcat_works; then
     COLORED_BLOCK=$(printf "%s\n" "${FINAL_LINES[@]}" | lolcat -f 2>/dev/null)
     if [[ -n "$COLORED_BLOCK" ]]; then
         mapfile -t COLORED_LINES <<< "$COLORED_BLOCK"
     else
-        COLORED_LINES=("${FINAL_LINES[@]}")
+        mapfile -t COLORED_LINES < <(gradient_block "${FINAL_LINES[@]}")
     fi
 else
-    COLORED_LINES=("${FINAL_LINES[@]}")
+    mapfile -t COLORED_LINES < <(gradient_block "${FINAL_LINES[@]}")
 fi
 
 # 4. Final Drawing
@@ -252,4 +300,7 @@ if [[ "$SHOW_SIG" == "true" ]]; then
 fi
 
 printf "\n" >&2
-[[ "$DO_CIVIS" == "true" ]] && NORM
+if [[ "$DO_CIVIS" == "true" ]]; then
+    NORM
+fi
+exit 0

@@ -2,7 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.5.3] - 2026-08-21
+## [1.5.4] - 2026-09-17
+
+### Fixed
+- **Freeze after install inside proot-distro / "cannot execute: required file not found"**: the host Termux's binaries leak onto the guest PATH (via `termux-profile.sh`) and a bare `command -v` treated them as installed — so guest `zsh` was never installed and `exec zsh` hit the host's Android ELF. All dependency checks are now **functional**: a command counts as installed only when it actually runs, so the guest's own `zsh`/`lolcat`/`figlet` etc. get installed instead of the broken shim being "detected" as present.
+- **No prompt after setup**: if `zsh` still can't run, bash no longer auto-exec's it, `reload_shell` falls back to a usable bash session, and the login shell is never switched to a broken zsh.
+- **Wizard printed "[✔] ALL DONE" after a failed apply**: a failed refresh now hard-fails with instructions (and the note points at `~/.promptify/backup/uninstall.sh` to restore). The self-uninstaller is written **before** runtime generation, so it exists even when the rest of setup breaks.
+- **Generated zshrc deleted when zsh wasn't usable at all**: "zsh can't run" is no longer treated as a config syntax error; a real `zsh -n` failure still blocks the file, and the generated bashrc is now `bash -n`-checked too.
+- **"proot-distro login" broke right after a successful install**: `chsh` recorded the HOST Termux zsh path (found first on the guest PATH) as the guest's login shell, so the next login died with "shell '/data/data/com.termux/files/usr/bin/zsh' is not available in container". Shell resolution now prefers the guest-local `/usr/bin/zsh` (host `/data/...` paths are rejected unless we're genuinely on Termux), and `/etc/shells` is updated so `chsh` accepts it.
+- **Confusing sudo failure inside proot-distro**: a broken setuid sudo now explains that sudo is installed but misconfigured (not a "wheel group" issue) and points out that a fresh proot might need `chown root:root /etc/sudo.conf /etc/sudoers` + `chmod 4755 /usr/bin/sudo` from a root session.
+- **White Termux banner after a Ruby upgrade**: a broken `lolcat` (gem wiped, exits with `GemNotFoundException`) is caught by the functional probe, the banner falls back to a native ANSI gradient (no lolcat dependency), and Dependencies gains a **Lolcat (banner colors)** item that reports missing/broken and reinstalls the gem (`repair_lolcat`).
+- **Banner Management could silently enable an empty banner**: "Add/Update Banner" only `touch`ed `~/.draw`, so when the banner script was missing it created a 0-byte file and the startup hook ran nothing. It now copies the real `.draw` from the installed assets and regenerates the runtime so the startup banner reliably renders.
+
+### Changed
+- Main-menu **Apply** and the wizard require a real apply success before reporting success; the status dot for Zsh reflects a *usable* zsh, not just one on PATH.
+- **Banner gradient now matches the real lolcat colors exactly**: the banner ports the exact `numeric_rainbow()` algorithm (per-line phase, sin-based RGB, random seed) from busyloop/lolcat instead of a rough approximation, so the startup banner looks like the original ruby lolcat output. Truecolor (24-bit) when the terminal supports it, 256-color cube otherwise, and the banner now exits cleanly (`exit 0`) regardless of --no-civis flags.
 
 ### Added
 - **Custom keyboard layout editor**: simplified fixed 2×8 (16 buttons) editor under Customization → Keyboard Layout. Edit any key position, add/remove popups, reset to default. Layouts saved to `~/.promptify/userdata/custom-layout.keys`.

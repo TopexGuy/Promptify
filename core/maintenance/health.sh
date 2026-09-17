@@ -59,7 +59,11 @@ run_health_checks() {
 
     # 3. Runtime shell config
     if [[ -f "$PFY_RUNTIME/zshrc" ]]; then
-        if zsh -n "$PFY_RUNTIME/zshrc" &>/dev/null; then
+        if ! cmd_probe zsh; then
+            HEALTH_ROWS+=("Runtime|warn|zsh not usable — install zsh")
+            HEALTH_FIXES+=(none)
+            HEALTH_NOTE=$((HEALTH_NOTE + 1))
+        elif zsh -n "$PFY_RUNTIME/zshrc" &>/dev/null; then
             HEALTH_ROWS+=("Runtime|ok|zshrc valid")
             HEALTH_FIXES+=(none)
             HEALTH_PASS=$((HEALTH_PASS + 1))

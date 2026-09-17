@@ -73,6 +73,13 @@ generate_runtime() {
     local aliases_block
     aliases_block=$(generate_aliases_block "${CUR_CAT_STYLE:-full}")
 
+    # Prefer the guest-local zsh (see resolve_real_zsh) so bash in proot execs
+    # the container's own shell, never the host Termux binary that only `command
+    # -v` would find. Empty means "resolve at runtime".
+    local zsh_path_rt
+    zsh_path_rt=$(resolve_real_zsh 2>/dev/null) || zsh_path_rt=""
+    [[ "$zsh_path_rt" == "/data/"* && "$OS_TYPE" != "termux" ]] && zsh_path_rt=""
+
     # --- zsh runtime -------------------------------------------------------
     {
         echo "# Promptify — runtime zsh config (auto-generated). Do not edit."
@@ -164,9 +171,17 @@ generate_runtime() {
 
         echo "export PROMPTIFY_DIR=\"$PFY_SYS_DIR\""
         echo
-        echo "# Auto-start Zsh in interactive bash sessions (when zsh is available)"
-        echo "if [[ -n \"\$BASH_VERSION\" && -z \"\$ZSH_VERSION\" && -x \"\$(command -v zsh)\" && -t 0 ]]; then"
-        echo "    exec zsh"
+        echo "# Auto-start Zsh in interactive bash sessions (only when zsh is really usable)"
+        echo "if [[ -n \"\$BASH_VERSION\" && -z \"\$ZSH_VERSION\" && -t 0 ]]; then"
+        if [[ -n "$zsh_path_rt" ]]; then
+            echo "  ZSHPROBE=\"$zsh_path_rt\""
+            echo "  [[ -x \"\$ZSHPROBE\" ]] || ZSHPROBE=\"\$(command -v zsh)\""
+        else
+            echo "  ZSHPROBE=\"\$(command -v zsh)\""
+        fi
+        echo "  if [[ -x \"\$ZSHPROBE\" ]] && \"\$ZSHPROBE\" --version &>/dev/null; then"
+        echo "    exec \"\$ZSHPROBE\""
+        echo "  fi"
         echo "fi"
         echo
         if [[ "$show_banner" == "true" ]]; then
@@ -178,9 +193,29 @@ generate_runtime() {
         echo "$aliases_block"
     } > "$PFY_RUNTIME_BASHRC"
 
-    # Validate the generated zsh config before it ever reaches the login shell.
-    if command -v zsh &> /dev/null && ! zsh -n "$PFY_RUNTIME_ZSHRC" 2>/dev/null; then
-        center_print "\e[1;31m[!] Generated zsh config failed validation. Not applying.\e[0m"
+    # Validate the generated zsh config before it ever reaches the login shell,
+    # and the generated bash config too. "zsh isn't usable" (missing, or a
+    # broken host-Termux shim on PATH inside proot-distro) must NOT look like a
+    # config error — the config is fine, the shell just can't run yet. So:
+    #   - zsh really runs → a syntax error deletes the file (never ship it).
+    #   - zsh can't run at all → keep the file (it's valid zsh) and warn.
+    if cmd_probe zsh; then
+        if ! zsh -n "$PFY_RUNTIME_ZSHRC" 2>/dev/null; then
+            center_print "\e[1;31m[!] Generated zsh config failed validation. Not applying.\e[0m"
+            rm -f "$PFY_RUNTIME_ZSHRC"
+            return 1
+        fi
+    elif command -v zsh &>/dev/null; then
+        center_print "\e[1;33m[i] zsh is present but not working yet (installed via a package manager will fix it).\e[0m"
+    else
+        center_print "\e[1;33m[i] zsh is not installed — install it (e.g. 'zsh' via your package manager) to activate the prompts.\e[0m"
+    fi
+
+    # A generated bashrc that fails bash -n would break every bash login —
+    # cheap to catch here before write_managed_profiles ships it.
+    if ! bash -n "$PFY_RUNTIME_BASHRC" 2>/dev/null; then
+        center_print "\e[1;31m[!] Generated bash config failed validation. Not applying.\e[0m"
+        rm -f "$PFY_RUNTIME_BASHRC"
         rm -f "$PFY_RUNTIME_ZSHRC"
         return 1
     fi

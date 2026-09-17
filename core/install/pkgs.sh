@@ -1,12 +1,27 @@
 #!/bin/bash
 
 is_installed() {
-    command -v "$1" >/dev/null 2>&1
+    cmd_probe "$1"
+}
+
+# Many of these boxes are proot-distro guests (the host Termux dir is visible
+# inside the guest). Sudo there only escalates when it was configured AS ROOT
+# first; otherwise every sudo call dies with setuid/ownership errors that have
+# nothing to do with the user being in a 'wheel' group. Give the real answer.
+proot_env_hint() {
+    [[ -d "/data/data/com.termux/files" ]] || return 0
+    echo -e "\e[1;33m    (proot/Termux) You are a non-root user inside proot-distro, but sudo is broken\n"
+    echo -e "\e[1;33m    here and cannot escalate. apt needs to run as the guest root. Easiest: exit\n"
+    echo -e "\e[1;33m    this shell and start the guest as root instead, then re-run Promptify:\n"
+    echo -e "\e[1;33m        proot-distro login <distro>       (run this on the host Termux)\n"
+    echo -e "\e[1;33m    To keep a normal user, fix sudo AS root inside the guest first:\n"
+    echo -e "\e[1;33m        chown root:root /etc/sudo.conf /etc/sudoers 2>/dev/null; chmod 4755 /usr/bin/sudo;"
+    echo -e "\e[1;33m        usermod -aG sudo <user>\e[0m"
 }
 
 install_dependencies() {
     local skip_power="${1:-false}"
-    
+    local sudo_err
     # --- Admin access check: fail loudly & early if we can't elevate. Only for
     # system package managers (Termux's pkg and Homebrew don't need root) ---
     case "$PKG_MNGR" in
@@ -14,19 +29,29 @@ install_dependencies() {
             if [[ "$(id -u)" -ne 0 ]]; then
                 if [[ -z "$SUDO" ]]; then
                     echo -e "\e[1;31m[✗] Dependencies need root, but no 'sudo' or 'doas' was found.\e[0m"
-                    echo -e "\e[1;33m    Install sudo as root (Arch: 'pacman -S sudo') and add your user to the wheel group, then re-run.\e[0m"
+                    proot_env_hint
+                    echo -e "\e[1;33m    On a regular system, install sudo as root and add your user to the wheel group, then re-run.\e[0m"
                     return 1
                 fi
                 sudo_notice "Installing system dependencies"
                 if [[ "$SUDO" == "sudo" ]]; then
-                    $SUDO -v || {
-                        echo -e "\e[1;31m[✗] Admin (sudo) access is required to install dependencies.\e[0m"
-                        echo -e "\e[1;33m    Your user must be allowed to sudo (e.g. add to the 'wheel' group: usermod -aG wheel ${USER}), then log out and back in.\e[0m"
+                    if ! sudo_err=$($SUDO -v 2>&1); then
+                        # Distinguish a broken sudo (setuid/ownership/config) from an
+                        # ordinary "user not permitted" refusal so the advice fits.
+                        if [[ "$sudo_err" == *setuid* || "$sudo_err" == *"owned by"* || "$sudo_err" == *"must be owned"* ]]; then
+                            echo -e "\e[1;31m[✗] sudo is installed but broken here (it cannot escalate).\e[0m"
+                            [[ -n "$sudo_err" ]] && echo -e "\e[1;33m    (sudo said: $(printf '%s' "$sudo_err" | head -1))\e[0m"
+                            proot_env_hint
+                        else
+                            echo -e "\e[1;31m[✗] Admin (sudo) access is required to install dependencies.\e[0m"
+                            echo -e "\e[1;33m    Your user must be allowed to sudo (e.g. add to the 'wheel' group: usermod -aG wheel ${USER}), then log out and back in.\e[0m"
+                        fi
                         return 1
-                    }
+                    fi
                 else
                     $SUDO true || {
                         echo -e "\e[1;31m[✗] Admin (doas) access is required to install dependencies.\e[0m"
+                        proot_env_hint
                         return 1
                     }
                 fi
@@ -81,40 +106,11 @@ install_dependencies() {
         done
     fi
 
-    # lolcat
+    # lolcat (optional — the banner falls back to an ANSI gradient when it's
+    # missing, and reinstall/repair is available from Dependencies)
     if ! is_installed lolcat; then
-        if [[ "$OS_TYPE" == "termux" ]]; then
-            echo -e "\033[1;34m[*] \033[32mInstalling lolcat via gem (Termux)...\033[0m"
-            if ! is_installed ruby; then
-                install_single_pkg "ruby"
-            fi
-            # Termux Ruby needs the openssl package at runtime for gem HTTPS
-            if ! is_installed openssl; then
-                install_single_pkg "openssl"
-            fi
-            # If Ruby still can't load openssl, reinstall it to fix the linkage
-            if ! ruby -e 'require "openssl"' &>/dev/null; then
-                echo -e "\033[1;34m[*] \033[32mReinstalling Ruby with OpenSSL support...\033[0m"
-                pkg reinstall ruby -y || pkg install ruby -y
-            fi
-            gem install lolcat --no-document \
-                || echo -e "\e[1;33m[!] Could not install lolcat (optional, continuing without it).\e[0m"
-        else
-            case $PKG_MNGR in
-                apt|pacman|dnf|zypper|apk|brew|xbps|slackpkg)
-                    install_single_pkg "lolcat" \
-                        || echo -e "\e[1;33m[!] Could not install lolcat (optional, continuing without it).\e[0m"
-                    ;;
-                *) 
-                    echo -e "\033[1;34m[*] \033[32mInstalling lolcat via gem...\033[0m"
-                    if ! is_installed ruby; then
-                        install_single_pkg "ruby"
-                    fi
-                    $SUDO gem install lolcat --no-document \
-                        || echo -e "\e[1;33m[!] Could not install lolcat (optional, continuing without it).\e[0m"
-                    ;;
-            esac
-        fi
+        install_lolcat \
+            || echo -e "\e[1;33m[!] Could not install lolcat (optional, continuing without it).\e[0m"
     fi
 
     # Optional Power Tools (skipped when the caller already offers them, e.g.
@@ -189,6 +185,58 @@ install_single_pkg() {
     echo -e "\e[1;31m[✗] Failed to install '$pkg'.\e[0m"
     echo -e "\e[1;33m    Command used: ${cmd[*]}\e[0m"
     echo -e "\e[1;33m    Fix: run it manually (add 'sudo' if needed), then re-run Promptify.\e[0m"
+    return 1
+}
+
+# Install lolcat the right way for the current OS/package manager.
+install_lolcat() {
+    if [[ "$OS_TYPE" == "termux" ]]; then
+        echo -e "\033[1;34m[*] \033[32mInstalling lolcat via gem (Termux)...\033[0m"
+        if ! is_installed ruby; then
+            install_single_pkg "ruby"
+        fi
+        # Termux Ruby needs the openssl package at runtime for gem HTTPS
+        if ! is_installed openssl; then
+            install_single_pkg "openssl"
+        fi
+        # If Ruby still can't load openssl, reinstall it to fix the linkage
+        if ! ruby -e 'require "openssl"' &>/dev/null; then
+            echo -e "\033[1;34m[*] \033[32mReinstalling Ruby with OpenSSL support...\033[0m"
+            pkg reinstall ruby -y || pkg install ruby -y
+        fi
+        gem install lolcat --no-document
+    else
+        case $PKG_MNGR in
+            apt|pacman|dnf|zypper|apk|brew|xbps|slackpkg)
+                install_single_pkg "lolcat"
+                ;;
+            *)
+                echo -e "\033[1;34m[*] \033[32mInstalling lolcat via gem...\033[0m"
+                if ! is_installed ruby; then
+                    install_single_pkg "ruby"
+                fi
+                $SUDO gem install lolcat --no-document
+                ;;
+        esac
+    fi
+}
+
+# Repair a broken or missing lolcat. A Ruby upgrade that wipes the gem leaves a
+# dead lolcat on PATH (`command -v` says installed, every run fails with a
+# GemNotFoundException) — the functional is_installed probe catches that.
+repair_lolcat() {
+    if is_installed lolcat; then
+        echo -e "\033[1;32m[✔] Lolcat is working.\033[0m"
+        return 0
+    fi
+    if command -v lolcat &>/dev/null; then
+        echo -e "\e[1;33m[!] lolcat found but not working (broken gem install?). Reinstalling...\e[0m"
+    fi
+    if install_lolcat && is_installed lolcat; then
+        echo -e "\033[1;32m[✔] lolcat repaired.\033[0m"
+        return 0
+    fi
+    echo -e "\e[1;33m[!] Could not repair lolcat (optional — the banner uses an ANSI gradient instead).\e[0m"
     return 1
 }
 

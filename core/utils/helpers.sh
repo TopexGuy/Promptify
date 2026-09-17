@@ -20,20 +20,77 @@ get_clean_len() {
 }
 
 # One-time, friendly heads-up before Promptify invokes sudo, so the password
-# prompt is never a surprise. Prints only once per session.
-SUDO_NOTICE_SHOWN=false
-sudo_notice() {
-    local reason="${1:-make a system change}"
-    [[ "$SUDO_NOTICE_SHOWN" == "true" ]] && return 0
-    SUDO_NOTICE_SHOWN=true
-    echo -e "\033[1;33m[i] ${reason} — needs \033[1;31madmin (sudo)\033[0m\033[1;33m access. You'll be asked once.\033[0m"
+# prompt is never a surprise. Defined in the entry script (promptify.sh) so it's
+# available during bootstrap/clone too — the FIRST admin need wins, whether
+# that's cloning or the setup wizard. Prints only once per session.
+
+# Functional command probe. A bare `command -v` can match a broken PATH entry —
+# e.g. the host Termux's binaries visible inside a proot-distro guest (they're
+# on PATH but "cannot execute: required file not found"), or a lolcat whose gem
+# was wiped by a Ruby upgrade. Those shims then fail at the first real call and
+# the "install skipped" bug silently leaves the system broken. So a command
+# counts as installed only when it's on PATH AND a benign probe actually runs.
+# Probe map: tput/figlet have no --version; everything else uses it.
+# Inside a proot-distro guest the HOST Termux bin dir is prepended to PATH by
+# termux-profile.sh, so `command -v zsh` finds the host's Android binary and the
+# guest never installs its own zsh. For non-Termux systems we therefore probe
+# against a PATH with /data/... entries removed — host shims must never count as
+# "installed". Real Termux (OS_TYPE=termux) keeps the full PATH.
+cmd_probe() {
+    local cmd="$1"
+    local probe_path=""
+    local p
+    # PFY_HOST_BIN marks the HOST's binary dir visible inside a proot guest
+    # (default /data/... = Termux); overrideable for tests.
+    local host_bin="${PFY_HOST_BIN:-/data/}"
+    if [[ "$OS_TYPE" != "termux" && "$PATH" == *"$host_bin"* ]]; then
+        local IFS=':'
+        for p in $PATH; do
+            [[ "$p" == "$host_bin"* ]] || probe_path+="$p:"
+        done
+        unset IFS
+        PATH="$probe_path" command -v "$cmd" &>/dev/null || return 1
+        case "$cmd" in
+            tput)   PATH="$probe_path" "$cmd" cols &>/dev/null ;;
+            figlet) PATH="$probe_path" "$cmd" -v &>/dev/null ;;
+            *)      PATH="$probe_path" "$cmd" --version &>/dev/null ;;
+        esac
+        return $?
+    fi
+    command -v "$cmd" &>/dev/null || return 1
+    case "$cmd" in
+        tput)   "$cmd" cols &>/dev/null ;;
+        figlet) "$cmd" -v &>/dev/null ;;
+        *)      "$cmd" --version &>/dev/null ;;
+    esac
+}
+
+# Canonical, runnable zsh path. `command -v zsh` can return the HOST Termux's
+# Android binary inside a proot-distro guest (its PATH is prepended by
+# termux-profile.sh): it even `--version`s fine under proot, but it is NOT the
+# guest's login shell — `chsh -s /data/data/com.termux/...` then poisons
+# `proot-distro login` ("shell ... is not available in container"). We prefer a
+# guest-local /usr/bin , /bin or /usr/local/bin zsh; only on real Termux is the
+# /data/... path acceptable. Prints the resolved path, exit 1 if none usable.
+resolve_real_zsh() {
+    local cand
+    for cand in "$(command -v zsh)" /usr/bin/zsh /bin/zsh /usr/local/bin/zsh; do
+        [[ -n "$cand" ]] || continue
+        [[ "$cand" == "/data/"* && "$OS_TYPE" != "termux" ]] && continue
+        [[ -x "$cand" ]] || continue
+        if "$cand" --version &>/dev/null; then
+            printf '%s' "$cand"
+            return 0
+        fi
+    done
+    return 1
 }
 
 check_status() {
     local all_found=true
     local cmd
     for cmd in "$@"; do
-        if ! command -v "$cmd" &> /dev/null; then
+        if ! cmd_probe "$cmd"; then
             all_found=false
             break
         fi

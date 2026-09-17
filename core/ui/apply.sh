@@ -61,12 +61,17 @@ setup_ui() {
     # modified, so uninstall can restore the exact original state.
     record_install_state
 
+    # Write the self-contained uninstaller EARLY (it only needs the snapshot).
+    # If anything below fails — a broken dependency, a bad runtime — the user
+    # must still have a working path to restore their original config.
+    generate_self_uninstaller
+
     local asset_dir="$INSTALL_DIR/assets"
 
     # ---- Terminal UI (Termux) / desktop font — snapshotted before writing ----
     sync_termux_ui "$asset_dir"
     if [[ "$OS_TYPE" != "termux" ]]; then
-        if command -v figlet &> /dev/null; then
+        if cmd_probe figlet; then
             local figlet_dir="/usr/share/figlet"
             [[ -d "/usr/share/figlet/fonts" ]] && figlet_dir="/usr/share/figlet/fonts"
 
@@ -136,18 +141,26 @@ setup_ui() {
         return 1
     fi
     write_managed_profiles
-    generate_self_uninstaller
 
-    # ---- Switch default shell to Zsh ----
+    # ---- Switch default shell to Zsh (only when zsh genuinely works — a
+    # broken host-Termux shim on PATH inside proot-distro must never become
+    # the login shell, and the HOST path must never be chsh'ed into a guest,
+    # or every future proot-distro login fails) ----
     if [[ "$SHELL" != *"zsh"* ]]; then
-        local zsh_path
-        zsh_path=$(command -v zsh)
-        if [[ -n "$zsh_path" ]]; then
-            if [[ "$OS_TYPE" == "termux" ]]; then
-                chsh -s zsh 2>/dev/null || true
-            else
+        if [[ "$OS_TYPE" == "termux" ]]; then
+            chsh -s zsh 2>/dev/null || true
+        else
+            local zsh_path
+            if zsh_path=$(resolve_real_zsh); then
                 sudo_notice "Switching your default shell to zsh"
+                # chsh only accepts shells listed in /etc/shells — apt adds them
+                # automatically, but a custom build may not have done so.
+                if ! grep -qxF "$zsh_path" /etc/shells 2>/dev/null; then
+                    $SUDO sh -c "grep -qxF '$zsh_path' /etc/shells 2>/dev/null || echo '$zsh_path' >> /etc/shells" 2>/dev/null || true
+                fi
                 $SUDO chsh -s "$zsh_path" "$(whoami)" 2>/dev/null || true
+            else
+                center_print "\e[1;33m[i] zsh isn't usable here — leaving your login shell unchanged.\e[0m"
             fi
         fi
     fi

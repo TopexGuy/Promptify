@@ -17,10 +17,16 @@ refresh_ui() {
 
 # Start a fresh interactive Zsh so applied changes are visible immediately,
 # without exiting and reopening the terminal. The fresh shell starts in the
-# directory Promptify was launched from, never in the clone/system dir.
+# directory Promptify was launched from, never in the clone/system dir. When
+# zsh is missing or broken (e.g. a host-Termux shim inside proot-distro), stay
+# in a usable bash session instead of freezing on a dead exec.
 reload_shell() {
     cd -- "${ORIGINAL_DIR:-$HOME}" 2>/dev/null
-    exec zsh
+    if cmd_probe zsh; then
+        exec zsh
+    fi
+    echo -e "\e[1;33m[i] zsh isn't usable here (missing or broken install). Staying in bash.\e[0m"
+    exec bash
 }
 
 is_interactive() {
@@ -31,7 +37,7 @@ is_interactive() {
 # not attached to a real terminal — just show the notice instead.
 restart_shell() {
     echo
-    if is_interactive && command -v zsh &>/dev/null; then
+    if is_interactive && cmd_probe zsh; then
         if confirm_action "Restart Zsh now to apply changes?" "y"; then
             echo -e "\e[1;34m[*] \e[32mRestarting shell...\e[0m"
             sleep 0.5

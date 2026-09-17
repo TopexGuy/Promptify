@@ -3,7 +3,7 @@
 # Promptify Version
 # NOTE: This is the single source of truth for the version number.
 # Bump it here only — the main menu, wizard, and changelog all read from it.
-export VERSION="1.5.3"
+export VERSION="1.5.4"
 
 # Split a version string into numeric MAJOR MINOR PATCH parts (missing = 0).
 # "1.4"      -> 1 4 0

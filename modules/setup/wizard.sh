@@ -151,8 +151,18 @@ guided_setup() {
     load_prefs
 
     # Apply writes the managed ~/.zshrc line, generates the runtime, records
-    # install state and writes the self-contained uninstaller.
-    refresh_ui || center_print "\033[1;33m[!] UI refresh had minor issues.\033[0m"
+    # install state and writes the early self-contained uninstaller. A failed
+    # apply must NEVER end in a false "ALL DONE" — if it broke, say so and
+    # point at the uninstaller that was written before anything was touched.
+    if ! refresh_ui; then
+        center_print "\e[1;31m[✗] Apply failed. Promptify was NOT fully installed.\e[0m"
+        echo -e "\e[1;33m    Your original config is untouched and can be restored with:\e[0m"
+        echo -e "\e[1;36m    bash $PFY_UNINSTALLER\e[0m"
+        echo -e "\e[1;33m    Then fix the failing package (e.g. install zsh) and run Guided Setup again.\e[0m"
+        tput cnorm
+        press_enter
+        return 1
+    fi
     echo
     center_print "\033[1;32m[✔] ALL DONE! Promptify is now persistent.\033[0m"
     center_print "\033[1;33m[*] Location: $PFY_SYS_DIR\033[0m"

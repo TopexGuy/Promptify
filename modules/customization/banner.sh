@@ -25,7 +25,18 @@ manage_banner() {
                     
                     set_pref NAME "$BANNER_NAME"
                     set_pref FONT "$CUR_FONT"
-                    touch "$HOME/.draw" 2>/dev/null
+                    # Real sync: copy the actual banner script (never `touch` an
+                    # empty file — that would silently enable a NULL banner) and
+                    # regenerate the runtime so the startup hook exists.
+                    if [[ -f "$PFY_CORE/assets/.draw" ]]; then
+                        cp -f "$PFY_CORE/assets/.draw" "$HOME/.draw" 2>/dev/null
+                    elif [[ -f "$INSTALL_DIR/assets/.draw" ]]; then
+                        cp -f "$INSTALL_DIR/assets/.draw" "$HOME/.draw" 2>/dev/null
+                    fi
+                    chmod +x "$HOME/.draw" 2>/dev/null
+                    snapshot_created "$HOME/.draw"
+                    generate_runtime
+                    write_managed_profiles
                     
                     load_prefs
                     calculate_ui_width

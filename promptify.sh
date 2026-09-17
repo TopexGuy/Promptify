@@ -16,6 +16,19 @@ POST_UPDATE=false
 # never lands in the clone/system directory after an apply.
 ORIGINAL_DIR="$(pwd)"
 
+# One-time, friendly heads-up before Promptify invokes sudo, so the password
+# prompt is never a surprise. Defined early (in the entry script) because the
+# FIRST admin need can happen during bootstrap/clone when core deps (git, tput)
+# are missing — the wizard's "sudo access" line should appear there instead.
+# Prints only once per session: whichever step needs admin first wins.
+SUDO_NOTICE_SHOWN=false
+sudo_notice() {
+    local reason="${1:-make a system change}"
+    [[ "$SUDO_NOTICE_SHOWN" == "true" ]] && return 0
+    SUDO_NOTICE_SHOWN=true
+    echo -e "\033[1;33m[i] ${reason} — needs \033[1;31madmin (sudo)\033[0m\033[1;33m access. You'll be asked once.\033[0m"
+}
+
 # Resolve script path
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do
@@ -100,6 +113,28 @@ if [[ "$IS_LOCAL" == "false" ]]; then
             elif command -v doas &>/dev/null; then
                 bs_sudo="doas"
             fi
+        fi
+        # A dead host-Termux sudo shim (inside proot-distro) or a misconfigured
+        # guest sudo passes `command -v` but dies instantly — say so clearly
+        # here rather than letting apt fail silently a few lines down.
+        if [[ "$bs_sudo" == "sudo" ]]; then
+            bs_sudo_err=$($bs_sudo -v 2>&1) || {
+                if [[ "$bs_sudo_err" == *setuid* || "$bs_sudo_err" == *"owned by"* || "$bs_sudo_err" == *"must be owned"* ]]; then
+                    echo -e " \e[1;31m[!] sudo is installed but broken here (it cannot escalate).\e[0m"
+                    [[ -n "$bs_sudo_err" ]] && echo -e " \e[1;33m    (sudo said: $(printf '%s' "$bs_sudo_err" | head -1))\e[0m"
+                    if [[ -d "/data/data/com.termux/files" ]]; then
+                        echo -e " \e[1;33m    (proot/Termux) Start the guest as root and re-run:  proot-distro login <distro>\e[0m"
+                        echo -e " \e[1;33m    (run that on the host Termux)\e[0m"
+                    fi
+                    exit 1
+                fi
+            }
+        fi
+        # First admin need of the session can be right here (deps missing at
+        # clone time) — the once-per-session sudo notice belongs at whichever
+        # step actually elevates first.
+        if [[ -n "$bs_sudo" ]]; then
+            sudo_notice "Installing git"
         fi
 
         if [[ -f /etc/os-release ]]; then
@@ -198,6 +233,10 @@ if [[ "$IS_LOCAL" == "true" ]]; then
     if ! tput cols &>/dev/null || ! git --version &>/dev/null; then
         [[ "$SILENT_MODE" == "false" ]] && echo -ne "\e[1;34m[*] Installing core dependencies for your system...\e[0m"
 
+        if [[ -n "$SUDO" ]]; then
+            sudo_notice "Installing core dependencies"
+        fi
+
         case $PKG_MNGR in
             pkg) run_cmd pkg install ncurses-utils git -y ;;
             apt) run_cmd $SUDO apt update -y && run_cmd $SUDO apt install ncurses-bin git -y ;;
@@ -259,7 +298,7 @@ trap 'tput cnorm' EXIT
 calculate_ui_width() {
     local name="${BANNER_NAME:-Promptify}"
     local fig_w=0
-    if command -v figlet &> /dev/null; then
+    if cmd_probe figlet; then
         fig_w=$(figlet -f "standard" "$name" | awk '{ if (length > max) max = length } END { print max }')
     else
         fig_w=${#name}
@@ -295,7 +334,7 @@ update_status() {
     local ok_dot="\033[1;32m●\033[0m"
     local bad_dot="\033[1;31m●\033[0m"
 
-    STATUS_ZSH=$(command -v zsh &>/dev/null && echo "$ok_dot" || echo "$bad_dot")
+    STATUS_ZSH=$({ cmd_probe zsh; } && echo "$ok_dot" || echo "$bad_dot")
     STATUS_PKGS=$( { check_status "figlet" "git" >/dev/null; } && echo "$ok_dot" || echo "$bad_dot")
     # OMZ: bundled (deps/) OR any system-wide oh-my-zsh counts as available
     if [[ -f "$PFY_DEPS_OMZ/oh-my-zsh.sh" || -f "/usr/share/oh-my-zsh/oh-my-zsh.sh" ]]; then
@@ -362,7 +401,10 @@ while true; do
         0) guided_setup; update_status ;;
         1)
             check_setup || continue
-            refresh_ui
+            if ! refresh_ui; then
+                center_print "\e[1;31m[✗] Apply failed — see messages above.\e[0m"
+                continue
+            fi
             center_print "\e[1;32m[✔] Changes Applied!\e[0m"
             restart_shell
             ;;

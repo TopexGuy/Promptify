@@ -77,6 +77,15 @@ dep_status() {
                 echo "missing"
             fi
             ;;
+        "lolcat")
+            if is_installed lolcat; then
+                echo "ok"
+            elif command -v lolcat &>/dev/null; then
+                echo "broken"
+            else
+                echo "missing"
+            fi
+            ;;
         *) echo "missing" ;;
     esac
 }
@@ -91,6 +100,10 @@ dep_agg() {
             outdated) [[ -z "$agg" || "$agg" == "ok" ]] && agg="outdated" ;;
         esac
     done
+    # lolcat is optional, so a merely-absent one must NOT red-flag the menu —
+    # but a *broken* one (present yet non-functional, e.g. a wiped gem) is the
+    # exact bug this version fixes and must surface.
+    [[ "$(dep_status lolcat)" == "broken" ]] && agg="broken"
     echo "${agg:-ok}"
 }
 
@@ -135,6 +148,9 @@ dependency_installer() {
 
     opts+=("Power Tools|$(dep_status power)")
     actions+=(install_power_tools)
+
+    opts+=("Lolcat (banner colors)|$(dep_status lolcat)")
+    actions+=(repair_lolcat)
 
     # 2. Run checkbox menu
     local choices
